@@ -999,6 +999,7 @@ html, body {
       <div>Protocolo de sobrevivência... <span>ATIVADO</span></div>
     </div>
     <button class="start-btn" id="start-btn">INICIAR SISTEMA</button>
+    <button class="start-btn" id="clear-save-btn" style="display:none;margin-top:8px;opacity:.6;font-size:11px">LIMPAR SAVE E RECOMEÇAR</button>
     <div style="font-family:var(--font-data);font-size:9px;color:var(--fg-dim);text-align:center;margin-top:4px">
       WASD / Setas para mover · E interagir · ESPAÇO atacar · F guardar · R escanear · I mochila · M música
     </div>
@@ -1201,6 +1202,7 @@ let gs = {
   ticks: 0,
   multiSession: { players: [], lastPing: 0 },
   inventory: [],
+  researches: [],      // pesquisas em andamento (várias, conforme o grau do núcleo)
   coins: 25,
   fx: [],
 };
@@ -3243,7 +3245,8 @@ function gameOver() {
     'Integridade estrutural comprometida. O núcleo de processamento falhou.\n\n' +
     (lost.total ? `Perdido: ${lost.bag} item(ns) da mochila e ${lost.eq} equipamento(s) vestido(s).` : 'Você não carregava nada.') +
     '\n\nReiniciando protocolo de sobrevivência...'), 2800);
-  setTimeout(resetPlayer, 6500);
+  saveGame();                                   // mochila/equipamentos já foram perdidos: salva só o progresso
+  setTimeout(() => { resetPlayer(); saveGame(); }, 6500);
 }
 
 // Ao morrer, o jogador perde TUDO que carregava: a mochila inteira e todos os equipamentos vestidos.
@@ -4160,6 +4163,7 @@ function doCoreEvolve() {
   p.energy = Math.min(p.maxEnergy, p.energy + CORE_EN);          // o novo espaço já vem carregado
   p.energizedUntil = Date.now() + 2500;                           // brilho de evolução
   sysLog(`NÚCLEO EVOLUÍDO: grau ${1 + p.coreLvl}. Energia máx. ${p.maxEnergy.toFixed(1)} un.`, 'important');
+  if (coreGrade() % RES_SLOT_EVERY === 0) sysLog(`NOVA VAGA DE PESQUISA liberada! Pesquisas simultâneas: ${researchSlots()}.`, 'important');
   updateHUD(); updateInvBadge(); renderCraft(); if (invOpen) renderInventory();
 }
 // ── DESCARTAR / RECICLAR (evita mochila lotada de material que você não usa) ──
@@ -4318,17 +4322,19 @@ function renderCraft() {
   } else if (craftTab === 'research') {
     const total = ITEM_DEFS.length, got = ITEM_DEFS.filter(d => isKnown(d.id)).length;
     h += `<div class="chint">Itens desconhecidos não podem ser usados nem equipados. <b>Destrua 1 unidade</b> para pesquisá-lo: depois você passa a reconhecer e entender todos os itens daquele tipo. Catalogados: <b>${got}/${total}</b>.</div>`;
-    if (gs.research) {
-      const r = gs.research, left = Math.max(0, Math.ceil((r.end - Date.now()) / 1000)), pct = Math.min(100, (Date.now() - r.start) / (r.end - r.start) * 100);
+    const slots = researchSlots(), act = gs.researches || [];
+    h += `<div class="cres">Pesquisas simultâneas: <b>${act.length}/${slots}</b> · +1 vaga a cada ${RES_SLOT_EVERY} graus de núcleo (grau atual: ${coreGrade()})</div>`;
+    act.forEach((r, i) => {
+      const left = Math.max(0, Math.ceil((r.end - Date.now()) / 1000)), pct = Math.min(100, (Date.now() - r.start) / (r.end - r.start) * 100);
       h += `<div class="crow"><div class="chead">${itemIcon(r.id, 34)}<div><b>Pesquisando…</b><small>Analisando a amostra desmontada</small></div></div>` +
-           `<div class="bar-track"><div class="bar-fill energy" id="res-bar" style="width:${pct}%"></div></div><div class="cres" id="res-left">${left} s restantes</div></div>`;
-    }
+           `<div class="bar-track"><div class="bar-fill energy" id="res-bar-${i}" style="width:${pct}%"></div></div><div class="cres" id="res-left-${i}">${left} s restantes</div></div>`;
+    });
     const unk = {}; gs.inventory.forEach(it => { if (it.kind === 'item' && !isKnown(it.id)) unk[it.id] = (unk[it.id] || 0) + (it.count || 1); });
     const ids = Object.keys(unk);
-    if (!ids.length && !gs.research) h += `<div class="cempty">Nenhum item desconhecido na mochila.</div>`;
+    if (!ids.length && !act.length) h += `<div class="cempty">Nenhum item desconhecido na mochila.</div>`;
     for (const id of ids) {
       h += `<div class="crow"><div class="chead">${itemIcon(id, 34)}<div><b style="color:var(--fg-dim)">Item desconhecido${unk[id] > 1 ? ' ×' + unk[id] : ''}</b><small>Pesquisa: ${RES_TIME[ITEMS[id].r - 1]} s · destrói 1 unidade</small></div></div>` +
-           `<button class="use-btn" data-res="${id}" ${gs.research ? 'disabled' : ''}>PESQUISAR</button></div>`;
+           `<button class="use-btn" data-res="${id}" ${act.length >= slots ? 'disabled' : ''}>PESQUISAR</button></div>`;
     }
   } else if (craftTab === 'up') {
     h += `<div class="chint">Junte <b>2 equipamentos iguais</b> da mochila (cada um com ao menos ${MIN_CRAFT_COND}% de condição, não importa o dano) e materiais para criar uma versão melhor (máx. +${MAX_UP}).</div>`;
@@ -4509,6 +4515,11 @@ function startGame() {
     gs.running = true;
     setTimeout(initMultiplayer, 600);
     for (const it of gs.items) if (it.type === 'cell') it.dropT0 = Date.now() + 700 + Math.random()*700;   // as células caem
+    if (gs._loaded) {
+      sysLog('Progresso carregado. Protocolo de sobrevivência: ATIVO.', 'important');
+      setTimeout(()=>sysLog('WASD/setas: mover · E: interagir · ESPAÇO: atacar · F: guardar · R: escanear · I: mochila'), 1200);
+      return;
+    }
     sysLog('Inicialização concluída. Protocolo de sobrevivência: ATIVO.', 'important');
     setTimeout(()=>sysLog('Energia: 4.8/5.0 un. Integridade: 24%. Situação crítica.', 'warning'), 800);
     setTimeout(()=>sysLog('Explore o depósito. Encontre fontes de energia.'), 1800);
@@ -4565,6 +4576,73 @@ function loop() {
 
 // ── BOOTSTRAP ─────────────────────────────────────────────
 init();
+
+// ── SAVE / LOAD ───────────────────────────────────────────
+// Salva ao fechar/recarregar a aba, ao esconder a aba e a cada 10 s.
+// Fora da morte salva TUDO. Na morte a mochila e os equipamentos já foram perdidos, então só o progresso é salvo.
+const SAVE_KEY = 'ultimoPulso.save', SAVE_VER = 1;
+function saveGame() {
+  if (!gs.running || gs._noSave) return;
+  try {
+    const p = gs.player, dead = p.dead;
+    const data = {
+      v: SAVE_VER, t: Date.now(),
+      player: {
+        gx: dead ? 7 : p.gx, gy: dead ? 7 : p.gy,
+        energy: dead ? 2.8 : p.energy, integrity: dead ? 31 : p.integrity,
+        xp: p.xp || 0, coreLvl: p.coreLvl || 0,
+        eq: dead ? {} : p.eq
+      },
+      inventory: dead ? [] : gs.inventory,
+      coins: gs.coins, bagSize: BAG_SIZE,
+      known: gs.known || {},
+      researches: gs.researches || [],
+      fog: gs.fog.map(r => r.join('')).join('|')
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+  } catch (e) {}
+}
+function loadGame() {
+  let d;
+  try { d = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); } catch (e) { d = null; }
+  if (!d || d.v !== SAVE_VER || !d.player) return false;
+  try {
+    const p = gs.player, sp = d.player;
+    p.xp = sp.xp || 0; p.coreLvl = Math.min(CORE_MAX, sp.coreLvl || 0);
+    for (const k in p.eq) p.eq[k] = (sp.eq && sp.eq[k]) || null;
+    gs.inventory = Array.isArray(d.inventory) ? d.inventory : [];
+    gs.coins = d.coins != null ? d.coins : gs.coins;
+    if (d.bagSize) BAG_SIZE = Math.min(BAG_MAX, Math.max(BAG_SIZE, d.bagSize));
+    gs.known = d.known || {};
+    gs.researches = Array.isArray(d.researches) ? d.researches.filter(r => r && ITEMS[r.id]) : [];
+    applyEquipStats();
+    p.gx = sp.gx; p.gy = sp.gy;
+    p.energy = Math.min(p.maxEnergy, sp.energy); p.integrity = Math.min(p.maxIntegrity, sp.integrity);
+    if (typeof d.fog === 'string') {
+      const rows = d.fog.split('|');
+      if (rows.length === MAP_H) rows.forEach((r, y) => { for (let x = 0; x < MAP_W; x++) { const v = +r[x]; gs.fog[y][x] = v === 0 ? 1 : (v === 1 ? 1 : 2); } });
+    }
+    updateCamera(); revealFog(p.gx, p.gy);
+    gs.camera.ox = -isoProject(p.gx, p.gy).x; gs.camera.oy = -isoProject(p.gx, p.gy).y + 20;
+    updateHUD(); updateModulesList(); updateInvBadge();
+    gs._loaded = true;
+    return true;
+  } catch (e) { console.warn('Falha ao carregar save', e); return false; }
+}
+function clearSave() {
+  gs._noSave = true;
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  location.reload();
+}
+if (loadGame()) {
+  const sb = document.getElementById('start-btn'); if (sb) sb.textContent = 'CONTINUAR';
+  const cb = document.getElementById('clear-save-btn');
+  if (cb) { cb.style.display = ''; cb.onclick = () => { if (cb.dataset.arm) clearSave(); else { cb.dataset.arm = 1; cb.textContent = 'CONFIRMAR: APAGAR TUDO?'; setTimeout(() => { delete cb.dataset.arm; cb.textContent = 'LIMPAR SAVE E RECOMEÇAR'; }, 4000); } }; }
+}
+window.addEventListener('beforeunload', saveGame);
+window.addEventListener('pagehide', saveGame);
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveGame(); });
+setInterval(saveGame, 10000);
 loop();
 
 // ══════════════════════════════════════════════════════
@@ -4929,29 +5007,35 @@ function drawBubbles() {
 
 
 // ── PESQUISA DE ITENS ─────────────────────────────────────
+const RES_SLOT_EVERY = 5;   // +1 pesquisa simultânea a cada 5 graus de núcleo (5, 10, 15...)
+function researchSlots() { return 1 + Math.floor(coreGrade() / RES_SLOT_EVERY); }
 function startResearch(id) {
-  if (gs.research) { sysLog('Já há uma pesquisa em andamento.', 'warning'); return; }
+  gs.researches = gs.researches || [];
+  if (gs.researches.length >= researchSlots()) { sysLog(`Todas as vagas de pesquisa estão ocupadas (${gs.researches.length}/${researchSlots()}).`, 'warning'); return; }
   if (isKnown(id)) return;
+  if (gs.researches.some(r => r.id === id)) { sysLog('Este item já está sendo pesquisado.', 'warning'); return; }
   const it = gs.inventory.find(i => i.kind === 'item' && i.id === id); if (!it) return;
   removeFromBag(it, 1);                                    // a amostra é destruída
   const secs = RES_TIME[ITEMS[id].r - 1], now = Date.now();
-  gs.research = { id: id, start: now, end: now + secs * 1000 };
-  sysLog(`Pesquisa iniciada: 1 unidade desmontada. Conclusão em ${secs} s.`, 'important');
+  gs.researches.push({ id: id, start: now, end: now + secs * 1000 });
+  sysLog(`Pesquisa iniciada (${gs.researches.length}/${researchSlots()}): 1 unidade desmontada. Conclusão em ${secs} s.`, 'important');
   updateInvBadge(); renderCraft(); if (invOpen) renderInventory();
 }
-function finishResearch() {
-  const r = gs.research; gs.research = null;
+function finishResearch(r) {
+  gs.researches = (gs.researches || []).filter(x => x !== r);
   gs.known = gs.known || {}; gs.known[r.id] = true;
   const d = ITEMS[r.id];
   sysLog(`PESQUISA CONCLUÍDA: ${d.name} (${RARITY[d.r].n}). ${d.desc}`, 'important');
   updateInvBadge(); if (craftOpen) renderCraft(); if (invOpen) renderInventory();
 }
 setInterval(() => {
-  if (!gs.research) return;
-  if (!gs.player.dead && Date.now() >= gs.research.end) { finishResearch(); return; }
-  const bar = document.getElementById('res-bar'), lb = document.getElementById('res-left'), r = gs.research;
-  if (bar) bar.style.width = Math.min(100, (Date.now() - r.start) / (r.end - r.start) * 100) + '%';
-  if (lb) lb.textContent = Math.max(0, Math.ceil((r.end - Date.now()) / 1000)) + ' s restantes';
+  const list = gs.researches; if (!list || !list.length) return;
+  if (!gs.player.dead) for (const r of list.slice()) if (Date.now() >= r.end) finishResearch(r);
+  (gs.researches || []).forEach((r, i) => {
+    const bar = document.getElementById('res-bar-' + i), lb = document.getElementById('res-left-' + i);
+    if (bar) bar.style.width = Math.min(100, (Date.now() - r.start) / (r.end - r.start) * 100) + '%';
+    if (lb) lb.textContent = Math.max(0, Math.ceil((r.end - Date.now()) / 1000)) + ' s restantes';
+  });
 }, 300);
 var _rcss = document.createElement('style');
 _rcss.textContent = '.slot .unk{position:absolute;top:1px;left:4px;font:bold 12px monospace;color:var(--warn);pointer-events:none}';
