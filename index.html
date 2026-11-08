@@ -717,10 +717,12 @@ html, body {
   border:1px solid rgba(180,120,30,.5);
   color:var(--warn);border-radius:3px;
   font-family:var(--font-hud);font-size:7px;letter-spacing:.12em;
-  cursor:pointer;transition:background .15s,border-color .15s;
+  pointer-events:none; /* clique tratado pelo card pai */
 }
-.mkt-sell-btn:hover:not(:disabled){background:rgba(255,170,34,.22);border-color:rgba(255,170,34,.7)}
-.mkt-sell-btn:disabled{opacity:.35;cursor:default}
+.mkt-sell-btn-dis{opacity:.35;color:var(--fg-dim);border-color:var(--steel);background:transparent}
+.mkt-ico-unknown{color:var(--fg-dim)!important;background:rgba(26,31,38,.5)!important;border-color:rgba(42,48,64,.5)!important}
+.mkt-name-unknown{color:var(--fg-dim)!important;font-style:italic}
+.mkt-unid-tag{font-family:var(--font-hud);font-size:7px;letter-spacing:.1em;color:var(--fg-dim);opacity:.7;pointer-events:none}
 
 /* qty bar */
 .mkt-qty-bar{height:2px;background:rgba(42,48,64,.8);border-radius:1px;overflow:hidden;margin-top:1px}
@@ -3568,7 +3570,7 @@ function toggleMarket(force) {
   if (marketOpen) { if (invOpen) toggleInventory(false); if (craftOpen) toggleCraft(false); renderMarket(); }
   document.getElementById('market-panel').classList.toggle('open', marketOpen);
 }
-function sellableCount(id) { return gs.inventory.reduce((n,it)=>n+(it.kind==='item'&&it.id===id?(it.count||1):0),0); }
+function sellableCount(id) { if (!isKnown(id)) return 0; return gs.inventory.reduce((n,it)=>n+(it.kind==='item'&&it.id===id?(it.count||1):0),0); }
 function sellItem(id) {
   const n=sellableCount(id); if(!n)return;
   takeId(id,n); gs.coins += n*(MARKET_PRICES[id]||1); sysLog(`Venda concluída: ${n} unidade(s) por ${n*(MARKET_PRICES[id]||1)} créditos.`, 'important'); updateInvBadge(); renderMarket(); if(invOpen)renderInventory();
@@ -3588,26 +3590,31 @@ function renderMarket(){
   if(!el)return; coins.textContent=gs.coins;
   const maxSell=12; // cap for qty bar
   const sellCards=Object.keys(MARKET_PRICES).map(id=>{
-    const n=sellableCount(id), price=MARKET_PRICES[id];
+    const known=isKnown(id);
+    const n=known ? sellableCount(id) : 0;
+    const price=MARKET_PRICES[id];
     const icon=MARKET_ICONS[id]||'·';
     const pct=Math.min(100,Math.round((n/Math.max(n,maxSell))*100));
     const disabled=!n;
-    return `<div class="mkt-sell-card${disabled?' mkt-disabled':''}">
+    const hasUnknown = !known && gs.inventory.some(it=>it.kind==='item'&&it.id===id);
+    return `<div class="mkt-sell-card${disabled?' mkt-disabled':''}" ${known&&!disabled?`data-sell="${id}"`:''} style="cursor:${known&&!disabled?'pointer':'default'}">
       <div class="mkt-card-top">
-        <div class="mkt-card-ico">${icon}<span class="mkt-card-ico-badge">×${n}</span></div>
-        <span class="mkt-card-name">${ITEMS[id].name}</span>
+        <div class="mkt-card-ico${!known?' mkt-ico-unknown':''}">${known?icon:'?'}<span class="mkt-card-ico-badge">×${n}</span></div>
+        <span class="mkt-card-name${!known?' mkt-name-unknown':''}">${known?ITEMS[id].name:'Desconhecido'}</span>
       </div>
       <div class="mkt-qty-bar"><div class="mkt-qty-fill" style="width:${pct}%"></div></div>
       <div class="mkt-card-price">
-        <span class="mkt-price-tag">${price}¢ /un</span>
-        <button class="mkt-sell-btn" data-sell="${id}" ${disabled?'disabled':''}>VENDER</button>
+        <span class="mkt-price-tag">${known?price+'¢ /un':'?¢ /un'}</span>
+        ${known
+          ? `<span class="mkt-sell-btn${disabled?' mkt-sell-btn-dis':''}">${disabled?'SEM ESTOQUE':'VENDER'}</span>`
+          : `<span class="mkt-unid-tag">${hasUnknown?'PESQUISAR':'---'}</span>`}
       </div>
     </div>`;
   }).join('');
   const buyIcons={bandagem:'✚',soro_energetico:'⚡',kit_de_reparos:'🔩',mochila:'◫'};
   const buyCards=MARKET_BUYS.map(b=>{
     const canAfford=gs.coins>=b.price;
-    return `<div class="mkt-buy-card${!canAfford?' mkt-disabled':''}">
+    return `<div class="mkt-buy-card${!canAfford?' mkt-disabled':''}" ${canAfford?`data-buy="${b.id}"`:''} style="cursor:${canAfford?'pointer':'default'}">
       <div class="mkt-buy-ico">${buyIcons[b.id]||'·'}</div>
       <div class="mkt-buy-info">
         <div class="mkt-buy-name">${b.name}</div>
@@ -3615,7 +3622,7 @@ function renderMarket(){
       </div>
       <div class="mkt-buy-action">
         <span class="mkt-buy-price">${b.price}¢</span>
-        <button class="mkt-buy-btn" data-buy="${b.id}" ${!canAfford?'disabled':''}>COMPRAR</button>
+        <span class="mkt-buy-btn${!canAfford?' mkt-sell-btn-dis':''}" style="pointer-events:none">${canAfford?'COMPRAR':'SEM CRÉDITO'}</span>
       </div>
     </div>`;
   }).join('');
@@ -3624,9 +3631,14 @@ function renderMarket(){
     <div class="mkt-sell-grid">${sellCards}</div>
     <div class="mkt-sec">Comprar</div>
     <div class="mkt-buy-list">${buyCards}</div>`;
-  el.querySelectorAll('[data-sell]').forEach(x=>x.onclick=()=>sellItem(x.dataset.sell));
-  el.querySelectorAll('[data-buy]').forEach(x=>x.onclick=()=>buyMarket(MARKET_BUYS.find(b=>b.id===x.dataset.buy)));
 }
+// event delegation — um único listener no painel, funciona mesmo após re-render
+document.getElementById('market-panel').addEventListener('click', e => {
+  const sellBtn = e.target.closest('[data-sell]');
+  const buyBtn  = e.target.closest('[data-buy]');
+  if (sellBtn && !sellBtn.disabled) { e.stopPropagation(); sellItem(sellBtn.dataset.sell); }
+  if (buyBtn  && !buyBtn.disabled)  { e.stopPropagation(); buyMarket(MARKET_BUYS.find(b=>b.id===buyBtn.dataset.buy)); }
+});
 document.getElementById('market-btn').addEventListener('click',()=>toggleMarket());
 document.getElementById('market-close').addEventListener('click',()=>toggleMarket(false));
 
